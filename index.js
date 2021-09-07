@@ -1,61 +1,33 @@
 /**
  * slice() reference.
  */
-// 方便使用 slice 对数组或类数组进行浅拷贝
+// 方便使用 slice 将类数组转换为数组
 var slice = Array.prototype.slice;
 
 /**
- * Expose `co`.
+ * 导出 co 模块
  */
-// 导出 co
 module.exports = co["default"] = co.co = co;
 
 /**
- * Wrap the given generator `fn` into a
- * function that returns a promise.
- * This is a separate function so that
- * every `co()` call doesn't create a new,
- * unnecessary closure.
- *
- * @param {GeneratorFunction} fn
- * @return {Function}
- * @api public
- */
-
-co.wrap = function (fn) {
-  createPromise.__generatorFunction__ = fn;
-  return createPromise;
-  function createPromise() {
-    return co.call(this, fn.apply(this, arguments));
-  }
-};
-
-/**
- * Execute the generator function or a generator
- * and return a promise.
- *
+ * co 核心函数，调用 co 会返回 promise
  * @param {Function} fn
  * @return {Promise}
  * @api public
  */
-// co 核心函数
 function co(gen) {
-  // 获取 co 函数调用时的上下文对象 this
+  // 保存 co 函数调用的上下文 this 对象
   var ctx = this;
 
-  // 获取除第一个参数外的所有参数集合
+  // 获取除了 gen 参数的其他参数组成的数组
   var args = slice.call(arguments, 1);
 
-  // we wrap everything in a promise to avoid promise chaining,
-  // which leads to memory leak errors.
-  // see https://github.com/tj/co/issues/180
-  // 返回一个 Promise 对象
+  // 返回一个 promise 对象
   return new Promise(function (resolve, reject) {
-    // 如果 gen 是 Generator 函数, 立即调用它并将 args 作为参数传入
-    // 返回一个迭代器对象
+    // gen 是一个函数，就调用它创建一个迭代器对象
     if (typeof gen === "function") gen = gen.apply(ctx, args);
 
-    // 如果 gen 不存在, 或者 gen 不是 Generator 调用创建的迭代器对象, 直接 resolve gen
+    // gen 是一个普通函数调用，直接 resolve gen 的返回值
     if (!gen || typeof gen.next !== "function") return resolve(gen);
 
     onFulfilled();
@@ -64,22 +36,25 @@ function co(gen) {
      * @param {Mixed} res
      * @return {Promise}
      * @api private
+     *
+     * 第一次调用时, res 的值为 undefined
+     * 后面每次迭代都接受 promise resolve 的结果
      */
 
     function onFulfilled(res) {
       var ret;
       try {
         /**
-         * 获取迭代器的值 ret {value: string, done: boolean}
-         * 调用 next() 方法时, 如果传入了参数, 那么这个参数会传给上一条执行 yield 语句左边的变量
+         * 迭代器对象调用 next() 获取 yield 后每次迭代的值
+         * 调用 next() 方法时, 如果传入了 res, 这个参数会传给上一条执行 yield 语句左边的变量
          */
         ret = gen.next(res);
       } catch (e) {
         return reject(e);
       }
       /**
-       * ret 就是 Generator 函数中 yield 后面的值
-       * 对 ret 值进行处理, 将它转换为 promise 对象
+       * ret => {value: any, done: boolean}
+       * 在 next 函数中根据 done 值判断迭代器是否结束。如果没有结束，则尝试将 value 转成 promise
        * 核心代码是 toPromise 这个函数
        */
       next(ret);
@@ -103,9 +78,6 @@ function co(gen) {
     }
 
     /**
-     * Get the next value in the generator,
-     * return a promise.
-     *
      * @param {Object} ret
      * @return {Promise}
      * @api private
@@ -113,21 +85,23 @@ function co(gen) {
 
     function next(ret) {
       /**
-       * 如果 done 为 true, 说明迭代器超出迭代序列的末尾, 则停止迭代结束
-       * 如果 done 为 false,说明迭代器能够生成序列中的下一个值
+       * done -> true, 迭代器结束
+       * done -> false, 继续处理 value 值
        */
 
       // 当 done 为 true, 迭代结束, 成功 resolve value值
       if (ret.done) return resolve(ret.value);
 
-      // 把 yield 后紧跟迭代器返回的 value 值转换成 Promise
+      // 把 yield 后紧跟迭代器返回的值转成 promise
       var value = toPromise.call(ctx, ret.value);
 
-      // value 存在, 并且 value 是 promise 对象
-      // 就调用它的 then 方法, 第一个回调函数接受 promise resolve 的结果
+      // 如果 yield 迭代的值可以被转换为 promise 对象
+      // 成功，使用 onFulfilled 函数接受成功的结果
+      // 失败，使用 onRejected 函数接受失败的结果
       if (value && isPromise(value)) return value.then(onFulfilled, onRejected);
 
-      // yidle 值不符合处理逻辑的类型
+      // yidle 迭代器返回的值不能为 toPromise 转换为 promise 对象，则抛错
+      // 因此 yidle 后迭代的值是受 co 函数限制的
       return onRejected(
         new TypeError(
           "You may only yield a function, promise, generator, array, or object, " +
@@ -141,49 +115,44 @@ function co(gen) {
 }
 
 /**
- * Convert a `yield`ed value into a promise.
- *
  * @param {Mixed} obj
  * @return {Promise}
  * @api private
+ * 将 yield 后迭代的值转成 promise 【核心代码】
+ *
  */
-
 function toPromise(obj) {
-  // 值为假, 直接返回
+  // 值为 falsy , 返回原值
   if (!obj) return obj;
 
-  // 如果该值已经是 Promise, 直接返回这个 Promise
+  // 如果 yield 后迭代的值是 promise, 直接返回这个 promise
   if (isPromise(obj)) return obj;
 
-  // 如果值是生成器函数或生成器对象, 则调用 co 递归处理这个生成器, 返回一个 Promise
+  // 如果 yield 后迭代的值是 Generator 函数, 再次调用 co 处理 Generator。co 调用的返回的值是 promise
   if (isGeneratorFunction(obj) || isGenerator(obj)) return co.call(this, obj);
 
-  // 如果是一个函数, 使用 thunkToPromise 处理并返回一个 Promise
+  // 如果 yield 后迭代的值是 Thunk 函数, 使用 thunkToPromise 将 Thunk 转成 promise并返回
   if ("function" == typeof obj) return thunkToPromise.call(this, obj);
 
-  // 将数组中的每个值都转换为 Promise, 并使用 Promise.all 处理
+  // 如果 yield 后迭代的值是数组, 将数组每一项都尝试转为 promise, 调用 Promise.all 处理，返回一个新的 promise
   if (Array.isArray(obj)) return arrayToPromise.call(this, obj);
 
-  // 如果值是一个继承自 Object 的对象, 将对象转换为 Promise, 转换规则为 objectToPromise 实现
+  // 如果 yield 后迭代的值是继承自 Object 的对象, 将对象中所有 key 对应的 value 值都尝试转为 promise
   if (isObject(obj)) return objectToPromise.call(this, obj);
 
   return obj;
 }
 
 /**
- * Convert a thunk to a promise.
- *
- * @param {Function}
- * @return {Promise}
- * @api private
+ * 接受 Thunk 函数，返回一个 promise 对象
+ * resolve 的值就是 Thunk 函数接受的结果
  */
-// 将 thunk 函数处理成 Promise
 function thunkToPromise(fn) {
   var ctx = this;
   return new Promise(function (resolve, reject) {
     fn.call(ctx, function (err, res) {
       if (err) return reject(err);
-      // 如果回调函数接受的参数大于 2 个, 除了 err 之外的所有参数作为数组类型返回
+      // 如果回调接受的参数大于 2 个, resolve 的值为除 err 外所有参数组成的数组
       if (arguments.length > 2) res = slice.call(arguments, 1);
       resolve(res);
     });
@@ -191,61 +160,53 @@ function thunkToPromise(fn) {
 }
 
 /**
- * Convert an array of "yieldables" to a promise.
- * Uses `Promise.all()` internally.
- *
+ * Promise.all 返回一个新的 promise 对象
  * @param {Array} obj
  * @return {Promise}
  * @api private
  */
-
-// 对一组值转换为 Promise, 并使用 Promise.all 接受这组 Promise 的结果
 function arrayToPromise(obj) {
   return Promise.all(obj.map(toPromise, this));
 }
 
 /**
- * Convert an object of "yieldables" to a promise.
- * Uses `Promise.all()` internally.
- *
- * @param {Object} obj
- * @return {Promise}
- * @api private
+ * 将一个对象转成 promise，返回 Promise.all 对所有 promises resolve 的结果值 results 对象
  */
-
 function objectToPromise(obj) {
   // 相当于 new Object 创建出一个新的对象
   var results = new obj.constructor();
 
-  // 获取这个对象的所有 key 组成的数组
+  // 获取 obj 对象的所有可枚举的 key 组成数组
   var keys = Object.keys(obj);
 
-  // 存储 promise 的数组
+  // 用于存储对 value 转换的 promise
   var promises = [];
 
-  // 遍历对象的 key 数组
+  // 循环 obj key 数组
   for (var i = 0; i < keys.length; i++) {
-    // 对象的每一个 key
+    // obj 的每一个 key
     var key = keys[i];
 
-    // 将 key 对应的值转换为 Promise
+    // 将 obj key 对应的 value 值尝试转换为 promise 对象
     var promise = toPromise.call(this, obj[key]);
 
-    // 校验, 如果转换成了 promise 对象, 执行 defer 逻辑
+    // 转换的 promise 可能是异步的处理，因此需要先将异步的处理存放到 promises 数组中
     if (promise && isPromise(promise)) defer(promise, key);
-    // 否则, 将 key 对应的普通值存储到 results 中
+    // 转换后的不是 promise, 直接把 value 赋值给 results 对应的 key
     else results[key] = obj[key];
   }
 
   // 返回一个新的 promise 对象, 等待所有 promise 的 resolve 回调都结束才触发 then 函数
+  // 只有所有的 promise 都 resolve 了，obj 对象 key 对应的值才赋值到 results 对象中
+  // 并返回最终的 results 值
   return Promise.all(promises).then(function () {
     return results;
   });
 
   function defer(promise, key) {
-    // predefine the key in the result
+    // 先初始化 results key 的值
     results[key] = undefined;
-    // 存储一组 promise.then 返回的新的 promise 对象
+    // 将 promise 先存储到 promises 数组中
     promises.push(
       promise.then(function (res) {
         results[key] = res;
@@ -255,8 +216,7 @@ function objectToPromise(obj) {
 }
 
 /**
- * Check if `obj` is a promise.
- *
+ * 检查 obj 是不是 promise 对象
  * @param {Object} obj
  * @return {Boolean}
  * @api private
@@ -267,15 +227,13 @@ function isPromise(obj) {
 }
 
 /**
- * Check if `obj` is a generator.
  *
  * @param {Mixed} obj
  * @return {Boolean}
  * @api private
  */
 
-// 是否是一个生成器对象
-// 生成器对象有 next 和 throw 方法
+// 检查 obj 是不是生成器对象
 function isGenerator(obj) {
   return "function" == typeof obj.next && "function" == typeof obj.throw;
 }
@@ -288,7 +246,7 @@ function isGenerator(obj) {
  * @api private
  */
 
-// 校验 obj 是不是生成器函数
+// 校验 obj 是不是 Generator
 function isGeneratorFunction(obj) {
   // 获取构造函数对象
   var constructor = obj.constructor;
@@ -303,14 +261,7 @@ function isGeneratorFunction(obj) {
   return isGenerator(constructor.prototype);
 }
 
-/**
- * Check for plain object.
- *
- * @param {Mixed} val
- * @return {Boolean}
- * @api private
- */
-
+// 检查 val 是不是一个普通对象 {} 或 new Object()
 function isObject(val) {
   return Object == val.constructor;
 }
